@@ -102,22 +102,19 @@ async def test_missing_auth_rejected(store_client):
 
 async def test_subagent_cross_merchant_lookup(store_client, subagent_client, monkeypatch):
     """Sub-agent lookup of another merchant's order returns an error."""
-    # Patch STORE_API_URL to point at our test store
-    import src.orders_agent as oa
-    monkeypatch.setattr(oa, "STORE_API_URL", "http://testserver-store")
+    import httpx as httpx_mod
+    from httpx import ASGITransport
 
-    # We need the sub-agent to call our test store, so we mock httpx
-    # Instead, let's test the sub-agent via its JSON-RPC endpoint directly
-    # by monkeypatching httpx to use our ASGI transport
-    from unittest.mock import AsyncMock, patch
+    import src.orders_agent as oa
     from src.store_api import app as store_app
 
-    original_get = oa.httpx.AsyncClient
+    monkeypatch.setattr(oa, "STORE_API_URL", "http://testserver-store")
+
+    OriginalClient = httpx_mod.AsyncClient
 
     class PatchedClient:
         def __init__(self, *args, **kwargs):
-            from httpx import ASGITransport
-            self._client = oa.httpx.AsyncClient(
+            self._client = OriginalClient(
                 transport=ASGITransport(app=store_app),
                 base_url="http://testserver-store",
             )
@@ -136,10 +133,11 @@ async def test_subagent_cross_merchant_lookup(store_client, subagent_client, mon
         json={
             "jsonrpc": "2.0",
             "method": "lookup_order",
-            "params": {"order_id": "2001"},  # merchant_b's order
+            "params": {"order_id": "2001"},
             "id": "test-1",
         },
         headers={"Authorization": "Bearer tok-merchant-a"},
     )
     data = resp.json()
-    assert "error" in data.get("result", {}), f"Expected error, got: {data}"
+    result = data.get("result", {})
+    assert "error" in result, f"Expected error in result, got: {data}"
