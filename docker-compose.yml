@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  store-api:
+    build: .
+    command: ["uvicorn", "src.store_api:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/auth/me')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  orders-agent:
+    build: .
+    command: ["uvicorn", "src.orders_agent:app", "--host", "0.0.0.0", "--port", "8002"]
+    ports:
+      - "8002:8002"
+    environment:
+      - STORE_API_URL=http://store-api:8001
+    depends_on:
+      store-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/.well-known/agent.json')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  chat-api:
+    build: .
+    command: ["uvicorn", "src.chat_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      - STORE_API_URL=http://store-api:8001
+      - SUB_AGENT_URL=http://orders-agent:8002
+      - LLM_PROVIDER=${LLM_PROVIDER:-fake}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SQLITE_DB_PATH=/app/data/checkpoints.db
+    volumes:
+      - chat-data:/app/data
+    depends_on:
+      store-api:
+        condition: service_healthy
+      orders-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  chat-data:
