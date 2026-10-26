@@ -19,7 +19,8 @@ import os
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from src.guardrails import sanitise_order, sanitise_orders
@@ -27,6 +28,7 @@ from src.guardrails import sanitise_order, sanitise_orders
 STORE_API_URL = os.getenv("STORE_API_URL", "http://localhost:8001")
 
 app = FastAPI(title="ShopHub Orders Sub-Agent")
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 # ---------------------------------------------------------------------------
 # Agent card (JSON document describing name, skills, endpoint)
@@ -161,12 +163,12 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict:
 @app.post("/jsonrpc")
 async def jsonrpc_endpoint(
     request: Request,
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
     """JSON-RPC 2.0 dispatcher — routes method to the right tool handler."""
-    if not authorization:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Missing authorization header")
-    token = authorization.replace("Bearer ", "")
+    token = credentials.credentials
 
     try:
         body = await request.json()

@@ -6,8 +6,11 @@ import copy
 import datetime as dt
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 # ---------------------------------------------------------------------------
 # Seed data
@@ -186,10 +189,10 @@ VALID_TRANSITIONS = {
 }
 
 
-def _resolve_merchant(authorization: Optional[str]) -> str:
-    if not authorization:
+def _resolve_merchant(credentials: Optional[HTTPAuthorizationCredentials]) -> str:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Missing authorization header")
-    token = authorization.replace("Bearer ", "")
+    token = credentials.credentials
     if token not in TOKENS:
         raise HTTPException(status_code=401, detail="Invalid token")
     merchant = TOKENS[token]
@@ -198,10 +201,10 @@ def _resolve_merchant(authorization: Optional[str]) -> str:
     return merchant
 
 
-def _get_token(authorization: Optional[str]) -> str:
-    if not authorization:
+def _get_token(credentials: Optional[HTTPAuthorizationCredentials]) -> str:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Missing authorization header")
-    return authorization.replace("Bearer ", "")
+    return credentials.credentials
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +222,8 @@ def reset_data():
 
 
 @app.get("/auth/me")
-def auth_me(authorization: Optional[str] = Header(None)):
-    token = _get_token(authorization)
+def auth_me(credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme)):
+    token = _get_token(credentials)
     if token not in USERS:
         raise HTTPException(status_code=401, detail="Invalid token")
     return USERS[token]
@@ -229,9 +232,9 @@ def auth_me(authorization: Optional[str] = Header(None)):
 @app.get("/orders")
 def list_orders(
     status: Optional[str] = None,
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
-    merchant = _resolve_merchant(authorization)
+    merchant = _resolve_merchant(credentials)
     results = [o for o in _orders_db if o["merchant"] == merchant]
     if status:
         results = [o for o in results if o["status"] == status.upper()]
@@ -241,10 +244,10 @@ def list_orders(
 @app.get("/orders/lookup")
 def lookup_order(
     id: str,
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
     """Legacy endpoint: always 200, status:false on failure."""
-    merchant = _resolve_merchant(authorization)
+    merchant = _resolve_merchant(credentials)
     for o in _orders_db:
         if o["id"] == id and o["merchant"] == merchant:
             return {"status": True, "order": o}
@@ -259,9 +262,9 @@ class OrderAction(BaseModel):
 @app.post("/orders/refund")
 def refund_order(
     body: OrderAction,
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
-    merchant = _resolve_merchant(authorization)
+    merchant = _resolve_merchant(credentials)
     for o in _orders_db:
         if o["id"] == body.id:
             if o["merchant"] != merchant:
@@ -279,9 +282,9 @@ def refund_order(
 @app.post("/orders/cancel")
 def cancel_order(
     body: OrderAction,
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
-    merchant = _resolve_merchant(authorization)
+    merchant = _resolve_merchant(credentials)
     for o in _orders_db:
         if o["id"] == body.id:
             if o["merchant"] != merchant:

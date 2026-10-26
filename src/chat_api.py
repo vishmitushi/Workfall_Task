@@ -19,7 +19,8 @@ import uuid
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -31,6 +32,7 @@ from src.orchestrator import (
 )
 
 app = FastAPI(title="ShopHub Support Chat API")
+_bearer_scheme = HTTPBearer()
 
 SUB_AGENT_URL = os.getenv("SUB_AGENT_URL", "http://localhost:8002")
 
@@ -93,12 +95,10 @@ def health():
 @app.post("/chat")
 async def chat(
     body: ChatRequest,
-    authorization: Optional[str] = Header(None),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ):
     """Stream a chat response over SSE."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    token = authorization.replace("Bearer ", "")
+    token = credentials.credentials
 
     auth_info = await _resolve_auth(token)
     merchant = auth_info.get("merchant")
@@ -172,12 +172,10 @@ async def chat(
 @app.post("/chat/approve")
 async def approve_or_reject(
     body: ApprovalRequest,
-    authorization: Optional[str] = Header(None),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ):
     """Resume a paused conversation with approve/reject."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    token = authorization.replace("Bearer ", "")
+    token = credentials.credentials
 
     auth_info = await _resolve_auth(token)
     merchant = auth_info.get("merchant")

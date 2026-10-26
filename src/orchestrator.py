@@ -338,6 +338,11 @@ def build_graph(checkpointer=None):
 
 
 async def create_checkpointer():
-    """Create an async SQLite checkpointer for persistence (R7)."""
-    saver = AsyncSqliteSaver.from_conn_string(SQLITE_DB_PATH)
+    """Create an async SQLite checkpointer for persistence (R7).
+
+    from_conn_string() returns an async context manager.  We enter it
+    here and keep the saver alive for the lifetime of the process.
+    """
+    ctx = AsyncSqliteSaver.from_conn_string(SQLITE_DB_PATH)
+    saver = await ctx.__aenter__()
     return saver
