@@ -67,6 +67,19 @@ class FakeChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=ai_msg)])
 
     def _route_query(self, user_text: str) -> AIMessage:
+        # General "list/show/get all orders" with no status filter
+        if re.search(r"(all|my|list|show|get)\s*(the\s+)?orders?", user_text) and not re.search(r"(paid|shipped|placed|delivered|cancelled|refunded|refund|cancel)", user_text):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        name="list_orders",
+                        args={},
+                        id="call_list_all",
+                    )
+                ],
+            )
+
         # List orders / status queries
         if re.search(r"(paid|shipped|placed|delivered|cancelled|refunded)\s*(orders?)?", user_text):
             status = "PAID"
@@ -228,6 +241,10 @@ class FakeChatModel(BaseChatModel):
                 f"status={o.get('status')}, total=${o.get('total')}"
             )
         return "\n".join(lines)
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeChatModel":
+        """No-op — the fake LLM routes tool calls via pattern matching."""
+        return self
 
     @property
     def _identifying_params(self) -> dict:

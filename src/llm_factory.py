@@ -15,6 +15,8 @@ def create_llm() -> BaseChatModel:
       - "anthropic"  → Claude via langchain-anthropic
     """
     provider = os.getenv("LLM_PROVIDER", "fake").lower()
+    
+    print(f"Provider, {provider}")
 
     if provider == "fake":
         from src.fake_llm import FakeChatModel
@@ -25,7 +27,7 @@ def create_llm() -> BaseChatModel:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4.6"),
             temperature=0,
             max_tokens=1024,
         )

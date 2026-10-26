@@ -14,9 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import traceback
 import uuid
 from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -24,12 +29,16 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+logger = logging.getLogger(__name__)
+
 from src.orchestrator import (
     AgentState,
     build_graph,
     create_checkpointer,
     discover_sub_agent,
 )
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 app = FastAPI(title="ShopHub Support Chat API")
 _bearer_scheme = HTTPBearer()
@@ -75,6 +84,21 @@ async def _resolve_auth(token: str) -> dict:
 # ---------------------------------------------------------------------------
 # SSE streaming
 # ---------------------------------------------------------------------------
+
+
+def _extract_text(content) -> str:
+    """Extract plain text from LLM content (handles both str and Anthropic list format)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content) if content else ""
 
 
 class ChatRequest(BaseModel):
@@ -125,6 +149,8 @@ async def chat(
     async def event_generator():
         yield {"event": "thread_id", "data": json.dumps({"thread_id": thread_id})}
 
+        streamed = False  # track whether on_chat_model_stream fired
+
         try:
             async for event in _graph.astream_events(
                 input_state, config=config, version="v2"
@@ -145,12 +171,26 @@ async def chat(
                 elif kind == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"content": chunk.content}),
-                        }
+                        text = _extract_text(chunk.content)
+                        if text:
+                            streamed = True
+                            yield {
+                                "event": "token",
+                                "data": json.dumps({"content": text}),
+                            }
+                elif kind == "on_chat_model_end":
+                    if streamed:
+                        streamed = False
+                        continue
+                    output = event.get("data", {}).get("output")
+                    if output and hasattr(output, "content") and output.content:
+                        text = _extract_text(output.content)
+                        if text:
+                            yield {
+                                "event": "token",
+                                "data": json.dumps({"content": text}),
+                            }
                 elif kind == "on_chain_end" and name == "proposal":
-                    # The graph has interrupted for human approval
                     state = await _graph.aget_state(config)
                     proposal = state.values.get("pending_proposal")
                     if proposal:
@@ -159,9 +199,11 @@ async def chat(
                             "data": json.dumps(proposal),
                         }
         except Exception as exc:
+            tb = traceback.format_exc()
+            logger.error("SSE stream error: %s\n%s", exc, tb)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(exc)}),
+                "data": json.dumps({"error": str(exc), "traceback": tb}),
             }
 
         yield {"event": "done", "data": json.dumps({"thread_id": thread_id})}
@@ -174,7 +216,12 @@ async def approve_or_reject(
     body: ApprovalRequest,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ):
-    """Resume a paused conversation with approve/reject."""
+    """Resume a paused conversation with approve/reject.
+
+    Uses Command(resume=...) to tell LangGraph to continue from the
+    interrupt_before point (the 'approval' node) instead of restarting
+    the graph from scratch.
+    """
     token = credentials.credentials
 
     auth_info = await _resolve_auth(token)
@@ -185,30 +232,37 @@ async def approve_or_reject(
     config = {"configurable": {"thread_id": body.thread_id}}
 
     from langchain_core.messages import HumanMessage
+    from langgraph.types import Command
 
-    input_state = {
-        "messages": [HumanMessage(content=body.action)],
-        "bearer_token": token,
-        "merchant": merchant,
-    }
+    resume_cmd = Command(
+        resume=body.action,
+        update={
+            "messages": [HumanMessage(content=body.action)],
+            "bearer_token": token,
+            "merchant": merchant,
+        },
+    )
 
     async def event_generator():
         try:
-            async for event in _graph.astream_events(
-                input_state, config=config, version="v2"
+            async for chunk in _graph.astream(
+                resume_cmd, config=config, stream_mode="updates"
             ):
-                kind = event.get("event", "")
-                if kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk and hasattr(chunk, "content") and chunk.content:
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"content": chunk.content}),
-                        }
+                logger.info("Approve chunk: %s", chunk)
+                for node_output in chunk.values():
+                    msgs = node_output.get("messages", [])
+                    for msg in msgs:
+                        if hasattr(msg, "content") and msg.content:
+                            yield {
+                                "event": "token",
+                                "data": json.dumps({"content": msg.content}),
+                            }
         except Exception as exc:
+            tb = traceback.format_exc()
+            logger.error("SSE approve error: %s\n%s", exc, tb)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(exc)}),
+                "data": json.dumps({"error": str(exc), "traceback": tb}),
             }
         yield {"event": "done", "data": json.dumps({"thread_id": body.thread_id})}
 

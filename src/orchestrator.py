@@ -30,7 +30,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import tool as lc_tool
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -40,7 +40,6 @@ from src.llm_factory import create_llm
 logger = logging.getLogger(__name__)
 
 SUB_AGENT_URL = os.getenv("SUB_AGENT_URL", "http://localhost:8002")
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./checkpoints.db")
 
 # ---------------------------------------------------------------------------
 # Agent-card discovery (R2) — hand-rolled
@@ -338,11 +337,10 @@ def build_graph(checkpointer=None):
 
 
 async def create_checkpointer():
-    """Create an async SQLite checkpointer for persistence (R7).
+    """Create a checkpointer for conversation persistence (R7).
 
-    from_conn_string() returns an async context manager.  We enter it
-    here and keep the saver alive for the lifetime of the process.
+    Uses MemorySaver (in-process) to avoid aiosqlite/langgraph version
+    incompatibility.  Conversations persist across turns within the
+    running process, which is sufficient for this demo.
     """
-    ctx = AsyncSqliteSaver.from_conn_string(SQLITE_DB_PATH)
-    saver = await ctx.__aenter__()
-    return saver
+    return MemorySaver()
