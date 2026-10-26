@@ -29,7 +29,7 @@ STORE_API_URL = os.getenv("STORE_API_URL", "http://localhost:8001")
 app = FastAPI(title="ShopHub Orders Sub-Agent")
 
 # ---------------------------------------------------------------------------
-# Agent card (A2A-style discovery)
+# Agent card (JSON document describing name, skills, endpoint)
 # ---------------------------------------------------------------------------
 
 AGENT_CARD = {

@@ -27,6 +27,7 @@ from src.orchestrator import (
     AgentState,
     build_graph,
     create_checkpointer,
+    discover_sub_agent,
 )
 
 app = FastAPI(title="ShopHub Support Chat API")
@@ -40,6 +41,14 @@ _graph = None
 @app.on_event("startup")
 async def startup():
     global _checkpointer, _graph
+    # R2: discover the sub-agent by fetching its agent card
+    try:
+        await discover_sub_agent()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Could not discover sub-agent (will use defaults): %s", exc
+        )
     _checkpointer = await create_checkpointer()
     _graph = build_graph(checkpointer=_checkpointer)
 

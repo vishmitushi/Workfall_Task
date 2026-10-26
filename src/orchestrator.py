@@ -16,6 +16,7 @@ The caller must send an "approve" or "reject" to continue.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import Annotated, Any, Literal, Sequence, TypedDict
@@ -36,8 +37,51 @@ from langgraph.prebuilt import ToolNode
 
 from src.llm_factory import create_llm
 
+logger = logging.getLogger(__name__)
+
 SUB_AGENT_URL = os.getenv("SUB_AGENT_URL", "http://localhost:8002")
 SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./checkpoints.db")
+
+# ---------------------------------------------------------------------------
+# Agent-card discovery (R2) — hand-rolled
+# ---------------------------------------------------------------------------
+# Populated at startup by discover_sub_agent().  Until then the orchestrator
+# falls back to the defaults so unit tests (which skip startup) still work.
+
+_agent_card: dict | None = None
+_agent_rpc_endpoint: str = "/jsonrpc"
+_agent_skills: set[str] = {"list_orders", "lookup_order", "refund_order", "cancel_order"}
+
+
+async def discover_sub_agent() -> dict:
+    """Fetch the sub-agent's agent card from /.well-known/agent.json.
+
+    Populates the module-level _agent_card, _agent_rpc_endpoint and
+    _agent_skills so that call_sub_agent() routes to the right endpoint
+    and only calls methods the sub-agent actually advertises.
+    """
+    global _agent_card, _agent_rpc_endpoint, _agent_skills
+
+    card_url = f"{SUB_AGENT_URL}/.well-known/agent.json"
+    logger.info("Discovering sub-agent at %s", card_url)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(card_url, timeout=5.0)
+        resp.raise_for_status()
+        card = resp.json()
+
+    _agent_card = card
+    _agent_rpc_endpoint = card.get("endpoint", "/jsonrpc")
+    _agent_skills = {s["name"] for s in card.get("skills", [])}
+
+    logger.info(
+        "Discovered sub-agent %r (v%s) with skills: %s — endpoint: %s",
+        card.get("name"),
+        card.get("version"),
+        ", ".join(sorted(_agent_skills)),
+        _agent_rpc_endpoint,
+    )
+    return card
 
 SYSTEM_PROMPT = """You are a support assistant for ShopHub merchants.
 You help merchant staff with their store's orders.
@@ -71,10 +115,19 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------------------------
 
 async def call_sub_agent(method: str, params: dict, token: str) -> Any:
-    """Call the orders sub-agent over JSON-RPC 2.0."""
+    """Call the orders sub-agent over JSON-RPC 2.0.
+
+    Uses the endpoint discovered from the agent card.  If the method isn't
+    in the card's skill list, returns an error without making a network call.
+    """
+    if _agent_skills and method not in _agent_skills:
+        return {"error": f"Sub-agent does not advertise skill: {method}"}
+
+    rpc_url = f"{SUB_AGENT_URL}{_agent_rpc_endpoint}"
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{SUB_AGENT_URL}/jsonrpc",
+            rpc_url,
             json={
                 "jsonrpc": "2.0",
                 "method": method,
